@@ -146,6 +146,10 @@ namespace Microsoft.Cyber.CyberSerialization
                                 {
                                     newRow.SetField<string>(field, d[field].ToString());
                                 }
+                                else
+                                {
+                                    newRow.SetField<string>(field, String.Empty);
+                                }
                             }
 
                             // Add the new row in the DataTable
