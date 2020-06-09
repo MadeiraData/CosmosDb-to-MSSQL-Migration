@@ -1,6 +1,6 @@
 ﻿// --------------------------------------------------------------------------------------------------------------------
-// <copyright file="Program.cs" company="Microsoft">
-//   Copyright (c) Microsoft Corporation. All rights reserved.
+// <copyright file="Program.cs" company="Madeira Ltd.">
+//   Copyright (c) Madeira Data Solutions. All rights reserved.
 // </copyright>
 // --------------------------------------------------------------------------------------------------------------------
 
@@ -22,13 +22,14 @@ namespace Microsoft.Cyber.CyberSerialization
     class Program
     {
         public static IConfigurationRoot configuration;
-        static DataTable CreateTable()
+        static DataTable CreateTable(string[] fieldsList)
         {
+            // TODO: Make column list dynamic based on fieldsToCopy
             DataTable dt = new DataTable();
-            dt.Columns.Add("ProfileKey", typeof(string));
-            dt.Columns.Add("SecondaryKey", typeof(string));
-            dt.Columns.Add("TertiaryKey", typeof(string));
-            dt.Columns.Add("SerializedData_JSON", typeof(string));
+            foreach (string fieldName in fieldsList)
+            {
+                dt.Columns.Add(fieldName, typeof(string));
+            }
             return dt;
         }
 
@@ -59,11 +60,26 @@ namespace Microsoft.Cyber.CyberSerialization
             string targetUsername = configuration["SQLServer:targetUsername"]; //"SqlUsername";
             string targetPassword = configuration["SQLServer:targetPassword"]; //"SqlPassword";
             string targetTable = configuration["SQLServer:targetTable"]; // "SqlTargetStagingTable";
+            bool truncateTargetTable = bool.Parse(configuration["SQLServer:truncateTargetTable"]); // true
             string targetProcedure = configuration["SQLServer:targetProcedureTVP"]; // "SqlStoredProcedureWithTVP";
             string mergeProcedure = configuration["SQLServer:mergeProcedure"]; // "SqlStoredProcedureForMerge";
             int rowsPerChunk = int.Parse(configuration["SQLServer:rowsPerChunk"]); // 5000;
             bool useBulkCopy = bool.Parse(configuration["SQLServer:useBulkCopy"]); // true;
-            var fieldsToCopy = configuration.GetSection("FieldsToCopy").Get<string[]>();
+            string[] fieldsToCopy = configuration.GetSection("FieldsToCopy").Get<string[]>();
+
+            #region Settings Validation
+            
+            if (String.IsNullOrEmpty(targetProcedure) && !useBulkCopy)
+            {
+                throw new Exception("targetProcedure must be specified when BulkCopy is not used");
+            }
+
+            if (String.IsNullOrEmpty(targetTable) && useBulkCopy)
+            {
+                throw new Exception("targetTable must be specified when using BulkCopy");
+            }
+
+            #endregion
 
             #region Connect to CosmosDB
 
@@ -98,7 +114,7 @@ namespace Microsoft.Cyber.CyberSerialization
 
             #region Migration Process
 
-            DataTable dataTable = CreateTable();
+            DataTable dataTable = CreateTable(fieldsToCopy);
             int i = 0;
             using (var queryable = client.CreateDocumentQuery(customSourceContainer.SelfLink, sourceQuery, option).AsDocumentQuery())
             {
@@ -109,23 +125,29 @@ namespace Microsoft.Cyber.CyberSerialization
                     string.Format("Data Source={0};Initial Catalog={1};User ID={2};Password={3}",
                     targetHost, targetDatabase, targetUsername, targetPassword));
                 sqlConnection.Open();
+                sqlConnection.InfoMessage += SqlConnection_InfoMessage;
 
                 // Truncate staging table
-                using (SqlCommand cmd = sqlConnection.CreateCommand())
+                if (truncateTargetTable)
                 {
-                    cmd.CommandType = CommandType.Text;
-                    cmd.CommandText = String.Format("TRUNCATE TABLE {0}", targetTable);
+                    using (SqlCommand cmd = sqlConnection.CreateCommand())
+                    {
+                        cmd.CommandType = CommandType.Text;
+                        cmd.CommandText = String.Format("TRUNCATE TABLE {0}", targetTable);
 
-                    Console.WriteLine(String.Format("{2} {3} Starting process (chunk size: {0}, fetch size: {1}). Truncating staging table...", rowsPerChunk, rowsPerFetch, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString()));
+                        Console.WriteLine("{1} {2} Truncating {0}...", targetTable, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
 
-                    cmd.ExecuteNonQuery();
+                        cmd.ExecuteNonQuery();
+                    }
                 }
 
                 #endregion
 
+                Console.WriteLine("{2} {3} Starting process (chunk size: {0}, fetch size: {1})", rowsPerChunk, rowsPerFetch, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+
                 while (queryable.HasMoreResults)
                 {
-                    Console.WriteLine(String.Format("{1} {2} Buffered: {0} (decompressing)", dataTable.Rows.Count, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString()));
+                    Console.WriteLine("{1} {2} Buffered: {0} (decompressing)", dataTable.Rows.Count, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
 
                     foreach (dynamic item in await queryable.ExecuteNextAsync())
                     {
@@ -140,15 +162,27 @@ namespace Microsoft.Cyber.CyberSerialization
                             // Construct a new DataRow
                             DataRow newRow = dataTable.NewRow();
 
-                            foreach (var field in fieldsToCopy)
+                            // If fields list was provided, use that
+                            if (fieldsToCopy.Length > 0)
                             {
-                                if (d.ContainsKey(field))
+                                foreach (string field in fieldsToCopy)
+                                {
+                                    if (d.ContainsKey(field) && d[field] != null)
+                                    {
+                                        newRow.SetField<string>(field, d[field].ToString());
+                                    }
+                                    else
+                                    {
+                                        newRow.SetField<string>(field, String.Empty);
+                                    }
+                                }
+                            }
+                            // Otherwise, try to generate row fields based on query fields returned
+                            else
+                            {
+                                foreach (string field in d.Keys)
                                 {
                                     newRow.SetField<string>(field, d[field].ToString());
-                                }
-                                else
-                                {
-                                    newRow.SetField<string>(field, String.Empty);
                                 }
                             }
 
@@ -182,7 +216,7 @@ namespace Microsoft.Cyber.CyberSerialization
                                 }
                             }
                         }
-                        catch (Exception)
+                        catch (Exception e)
                         {
                             Console.WriteLine();
                             Console.WriteLine("Last item:");
@@ -190,14 +224,14 @@ namespace Microsoft.Cyber.CyberSerialization
                             Console.WriteLine(item);
                             Console.WriteLine("===============================================");
                             Console.WriteLine();
-                            throw;
+                            throw e;
                         }
                     }
                 }
 
                 // If more data remained in buffer object
 
-                Console.WriteLine(String.Format("{1} {2} Buffered: {0} (finalizing)", dataTable.Rows.Count, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString()));
+                Console.WriteLine("{1} {2} Buffered: {0} (finalizing)", dataTable.Rows.Count, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
 
                 // Check if should flush staging data using SqlBulkCopy
                 if (useBulkCopy && dataTable.Rows.Count > 0)
@@ -213,11 +247,34 @@ namespace Microsoft.Cyber.CyberSerialization
                 dataTable.Clear();
                 mergeStaging(sqlConnection, mergeProcedure);
 
-                Console.WriteLine(String.Format("{0} {1} Migration is complete!", DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString()));
+                Console.WriteLine("{0} {1} Migration is complete!", DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
                 sqlConnection.Close();
             }
 
             #endregion
+        }
+
+        private static void SqlConnection_InfoMessage(object sender, SqlInfoMessageEventArgs e)
+        {
+            foreach (SqlError item in e.Errors)
+            {
+                if (item.Class >= 1 && item.Class <= 9)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("{5} {6} Warning {0} Severity {1} Line {2} ({3}): {4}", item.Number, item.Class, item.LineNumber, item.Procedure, item.Message, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+                    Console.ResetColor();
+                }
+                else if (item.Class > 10)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("{5} {6} Error {0} Severity {1} Line {2} ({3}): {4}", item.Number, item.Class, item.LineNumber, item.Procedure, item.Message, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.WriteLine("{1} {2} {0}", item.Message, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+                }
+            }
         }
 
         private static void insertChunk(SqlConnection sqlConnection, string targetProcedure, DataTable dataTable)
@@ -236,17 +293,15 @@ namespace Microsoft.Cyber.CyberSerialization
 
         private static void mergeStaging(SqlConnection sqlConnection, string mergeProcedure)
         {
-            Console.WriteLine("{0} {1} Merging...", DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
-            using (SqlCommand cmd = sqlConnection.CreateCommand())
+            if (!String.IsNullOrEmpty(mergeProcedure))
             {
-                cmd.CommandType = CommandType.StoredProcedure;
-                cmd.CommandText = mergeProcedure;
-                cmd.CommandTimeout = 3600000;
-                System.Data.SqlClient.SqlParameter sqlParam = cmd.Parameters.AddWithValue("@TruncateStagingOnSuccess", true);
-                SqlDataReader reader = cmd.ExecuteReader();
-                while (reader.Read())
+                Console.WriteLine("{0} {1} Merging...", DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+                using (SqlCommand cmd = sqlConnection.CreateCommand())
                 {
-                    Console.WriteLine(String.Format("{3} {4} Profiles: {0}, FileOrgMachines: {1}, InvalidProfiles: {2}", reader[0], reader[1], reader[2], DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString()));
+                    cmd.CommandType = CommandType.StoredProcedure;
+                    cmd.CommandText = mergeProcedure;
+                    cmd.CommandTimeout = 3600000;
+                    cmd.ExecuteNonQuery();
                 }
             }
         }
