@@ -59,10 +59,10 @@ namespace Microsoft.Cyber.CyberSerialization
             string targetDatabase = configuration["SQLServer:targetDatabase"]; //"SqlDatabaseName";
             string targetUsername = configuration["SQLServer:targetUsername"]; //"SqlUsername";
             string targetPassword = configuration["SQLServer:targetPassword"]; //"SqlPassword";
-            string targetTable = configuration["SQLServer:targetTable"]; // "SqlTargetStagingTable";
+            string? targetTable = configuration["SQLServer:targetTable"]; // "SqlTargetStagingTable";
             bool truncateTargetTable = bool.Parse(configuration["SQLServer:truncateTargetTable"]); // true
-            string targetProcedure = configuration["SQLServer:targetProcedureTVP"]; // "SqlStoredProcedureWithTVP";
-            string mergeProcedure = configuration["SQLServer:mergeProcedure"]; // "SqlStoredProcedureForMerge";
+            string? targetProcedure = configuration["SQLServer:targetProcedureTVP"]; // "SqlStoredProcedureWithTVP";
+            string? mergeProcedure = configuration["SQLServer:mergeProcedure"]; // "SqlStoredProcedureForMerge";
             int rowsPerChunk = int.Parse(configuration["SQLServer:rowsPerChunk"]); // 5000;
             bool useBulkCopy = bool.Parse(configuration["SQLServer:useBulkCopy"]); // true;
             string[] fieldsToCopy = configuration.GetSection("FieldsToCopy").Get<string[]>();
@@ -128,7 +128,7 @@ namespace Microsoft.Cyber.CyberSerialization
                 sqlConnection.InfoMessage += SqlConnection_InfoMessage;
 
                 // Truncate staging table
-                if (truncateTargetTable)
+                if (truncateTargetTable && !String.IsNullOrEmpty(targetTable))
                 {
                     using (SqlCommand cmd = sqlConnection.CreateCommand())
                     {
@@ -291,7 +291,7 @@ namespace Microsoft.Cyber.CyberSerialization
             }
         }
 
-        private static void mergeStaging(SqlConnection sqlConnection, string mergeProcedure)
+        private static void mergeStaging(SqlConnection sqlConnection, string? mergeProcedure)
         {
             if (!String.IsNullOrEmpty(mergeProcedure))
             {
