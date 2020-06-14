@@ -236,6 +236,7 @@ namespace Microsoft.Cyber.CyberSerialization
                                 }
                             }
 
+                            // Reset errors count if insertion is successful
                             if (errorsCount > 0)
                             {
                                 errorsCount = 0;
