@@ -15,7 +15,9 @@ using System.Data;
 using System.Data.SqlClient;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Timers;
 
 namespace Microsoft.Cyber.CyberSerialization
 {
@@ -65,6 +67,8 @@ namespace Microsoft.Cyber.CyberSerialization
             string? mergeProcedure = configuration["SQLServer:mergeProcedure"]; // "SqlStoredProcedureForMerge";
             int rowsPerChunk = int.Parse(configuration["SQLServer:rowsPerChunk"]); // 5000;
             bool useBulkCopy = bool.Parse(configuration["SQLServer:useBulkCopy"]); // true;
+            int maxRetries = int.Parse(configuration["SQLServer:maxRetries"]); // 10;
+            int delaySecondsBetweenRetries = int.Parse(configuration["SQLServer:delaySecondsBetweenRetries"]); // 30;
             string[] fieldsToCopy = configuration.GetSection("FieldsToCopy").Get<string[]>();
 
             #region Settings Validation
@@ -116,6 +120,7 @@ namespace Microsoft.Cyber.CyberSerialization
 
             DataTable dataTable = CreateTable(fieldsToCopy);
             int i = 0;
+            int errorsCount = 0;
             using (var queryable = client.CreateDocumentQuery(customSourceContainer.SelfLink, sourceQuery, option).AsDocumentQuery())
             {
 
@@ -153,6 +158,21 @@ namespace Microsoft.Cyber.CyberSerialization
                     {
                         // Iterate through items
                         i++;
+                        insertion_start:
+
+                        // Retry connection if necessary
+                        if (sqlConnection == null || sqlConnection.State != ConnectionState.Open)
+                        {
+                            if (sqlConnection != null) sqlConnection.Dispose();
+
+                            Thread.Sleep(delaySecondsBetweenRetries * 1000);
+
+                            sqlConnection = new SqlConnection(
+                                                string.Format("Data Source={0};Initial Catalog={1};User ID={2};Password={3}",
+                                                targetHost, targetDatabase, targetUsername, targetPassword));
+                            sqlConnection.Open();
+                            sqlConnection.InfoMessage += SqlConnection_InfoMessage;
+                        }
 
                         try
                         {
@@ -215,16 +235,36 @@ namespace Microsoft.Cyber.CyberSerialization
                                     dataTable.Clear();
                                 }
                             }
+
+                            if (errorsCount > 0)
+                            {
+                                errorsCount = 0;
+                            }
                         }
                         catch (Exception e)
                         {
-                            Console.WriteLine();
-                            Console.WriteLine("Last item:");
-                            Console.WriteLine("===============================================");
-                            Console.WriteLine(item);
-                            Console.WriteLine("===============================================");
-                            Console.WriteLine();
-                            throw e;
+                            if (errorsCount < maxRetries)
+                            {
+                                Console.WriteLine("{3} {4} ERROR (attempt {0} out of {1}): {2}", errorsCount, maxRetries, e.Message, DateTime.Now.ToShortDateString(), DateTime.Now.ToLongTimeString());
+                                errorsCount++;
+
+                                if (sqlConnection.State == ConnectionState.Open)
+                                {
+                                    sqlConnection.Close();
+                                }
+
+                                goto insertion_start;
+                            }
+                            else
+                            {
+                                Console.WriteLine();
+                                Console.WriteLine("Last item:");
+                                Console.WriteLine("===============================================");
+                                Console.WriteLine(item);
+                                Console.WriteLine("===============================================");
+                                Console.WriteLine();
+                                throw e;
+                            }
                         }
                     }
                 }
