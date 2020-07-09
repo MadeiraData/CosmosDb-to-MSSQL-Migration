@@ -326,7 +326,7 @@ namespace Microsoft.Cyber.CyberSerialization
                 cmd.CommandType = CommandType.StoredProcedure;
                 cmd.CommandText = targetProcedure;
                 cmd.CommandTimeout = 3600000;
-                System.Data.SqlClient.SqlParameter sqlParam = cmd.Parameters.AddWithValue("@Profiles", dataTable);
+                System.Data.SqlClient.SqlParameter sqlParam = cmd.Parameters.AddWithValue("@Batch", dataTable);
                 sqlParam.SqlDbType = SqlDbType.Structured;
                 cmd.ExecuteNonQuery();
             }
