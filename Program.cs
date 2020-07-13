@@ -24,9 +24,10 @@ namespace Microsoft.Cyber.CyberSerialization
     class Program
     {
         public static IConfigurationRoot configuration;
+        
+        // This is used for making column list dynamic based on fieldsToCopy
         static DataTable CreateTable(string[] fieldsList)
         {
-            // TODO: Make column list dynamic based on fieldsToCopy
             DataTable dt = new DataTable();
             foreach (string fieldName in fieldsList)
             {
